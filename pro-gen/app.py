@@ -3,9 +3,17 @@ import pandas as pd
 from typing import List, Dict, Any
 import io
 import os
+import zipfile
+import shutil
 from dotenv import load_dotenv
 from azure.storage.blob import BlobServiceClient
 from openai import AzureOpenAI
+from langchain_community.vectorstores.azuresearch import AzureSearch
+from langchain_openai import AzureOpenAIEmbeddings
+from langchain_community.retrievers import AzureAISearchRetriever
+import xml.etree.ElementTree as ET
+
+
 
 load_dotenv(override=True)
 AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
@@ -18,8 +26,11 @@ OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION")
 OPENAI_API_ENDPOINT = os.getenv("OPENAI_API_ENDPOINT")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+SEARCHSERVICE_NAME = os.getenv("SEARCHSERVICE_NAME")
 SEARCHSERVICE_KEY = os.getenv("SEARCHSERVICE_KEY")
 SEARCHSERVICE_ENDPOINT = os.getenv("SEARCHSERVICE_ENDPOINT")
+SEARCHSERVICE_INDEX_NAME = os.getenv("SEARCHSERVICE_INDEX_NAME")
+SEARCHSERVICE_EMBEDDING_DEPLOYMENT_NAME = os.getenv("SEARCHSERVICE_EMBEDDING_DEPLOYMENT_NAME")
 
 def init_session_state():
     """세션 상태 초기화"""
@@ -39,7 +50,8 @@ def init_session_state():
             'architecture_pattern': 'mvc',
             'database': 'mysql',
             # 'csv_file': None,
-            'additional_requirements': ''
+            'additional_requirements': '',
+            'structure': ''
         }
 
 def render_project_metadata_section():
@@ -199,65 +211,10 @@ def render_database_section():
     # 세션 상태 업데이트
     st.session_state.project_config['database'] = database
 
-# def render_csv_upload_section():
-#     """CSV 파일 업로드 섹션"""
-#     st.subheader("📄 CSV Data Upload")
-    
-#     uploaded_file = st.file_uploader(
-#         "Upload CSV file for data modeling",
-#         type=['csv'],
-#         help="Upload a CSV file to automatically generate entities based on your data structure"
-#     )
-    
-#     if uploaded_file is not None:
-#         try:
-#             # CSV 파일 읽기
-#             df = pd.read_csv(uploaded_file)
-            
-#             # 파일 정보 표시
-#             col1, col2, col3 = st.columns(3)
-#             with col1:
-#                 st.metric("Rows", len(df))
-#             with col2:
-#                 st.metric("Columns", len(df.columns))
-#             with col3:
-#                 st.metric("File Size", f"{uploaded_file.size / 1024:.1f} KB")
-            
-#             # 데이터 미리보기
-#             st.write("**Data Preview:**")
-#             st.dataframe(df.head(), use_container_width=True)
-            
-#             # 컬럼 정보 표시
-#             st.write("**Column Information:**")
-#             column_info = []
-#             for col in df.columns:
-#                 dtype = str(df[col].dtype)
-#                 null_count = df[col].isnull().sum()
-#                 column_info.append({
-#                     'Column': col,
-#                     'Type': dtype,
-#                     'Null Count': null_count,
-#                     'Sample Value': str(df[col].iloc[0]) if len(df) > 0 else 'N/A'
-#                 })
-            
-#             st.dataframe(pd.DataFrame(column_info), use_container_width=True)
-            
-#             # 세션 상태에 CSV 데이터 저장
-#             st.session_state.project_config['csv_file'] = {
-#                 'name': uploaded_file.name,
-#                 'data': df.to_dict('records'),
-#                 'columns': list(df.columns),
-#                 'dtypes': df.dtypes.to_dict()
-#             }
-            
-#         except Exception as e:
-#             st.error(f"Error reading CSV file: {str(e)}")
-#     else:
-#         st.session_state.project_config['csv_file'] = None
 
 def render_additional_requirements_section():
     """추가 요구사항 섹션"""
-    st.subheader("📝 Additional Requirements & Entity")
+    st.subheader("📝 Additional Requirements & Entities")
     example = """
     Entity Name,Description,Primary Key,Foreign Keys (Relationships),Key Fields (for quick understanding)
     Users,쇼핑몰의 고객 또는 관리자 정보,id,,email, username, password_hash
@@ -364,27 +321,9 @@ def render_page2():
         db_icon = db_icons.get(config['database'], '🗄️')
         st.markdown(f"**Database**\n{db_icon} {config['database'].title()}")
     
-    # CSV 파일 정보
-    # if config['csv_file']:
-    #     st.subheader("📄 Uploaded Data")
-    #     csv_info = config['csv_file']
-    #     col1, col2, col3 = st.columns(3)
-        
-    #     with col1:
-    #         st.metric("File Name", csv_info['name'])
-    #     with col2:
-    #         st.metric("Columns", len(csv_info['columns']))
-    #     with col3:
-    #         st.metric("Rows", len(csv_info['data']))
-        
-    #     # 컬럼 목록 표시
-    #     st.write("**Detected Columns:**")
-    #     columns_text = ", ".join(csv_info['columns'])
-    #     st.code(columns_text)
-    
     # 추가 요구사항
     if config['additional_requirements']:
-        st.subheader("📝 Additional Requirements")
+        st.subheader("📝 Additional Requirements & Entities")
         st.text_area(
             "Requirements:",
             value=config['additional_requirements'],
@@ -418,23 +357,120 @@ def render_page2():
     """
     
     st.code(structure)
+    st.session_state.project_config['structure'] = structure
 
     client = AzureOpenAI(
         api_version=OPENAI_API_VERSION,
         azure_endpoint=OPENAI_API_ENDPOINT,
         api_key=OPENAI_API_KEY,
     )
+    index_name = SEARCHSERVICE_INDEX_NAME
+    retriever = AzureAISearchRetriever(
+        service_name=SEARCHSERVICE_NAME,
+        top_k=3,
+        index_name=index_name, # ai search 서비스에서 사용할 인덱스 이름
+        content_key="chunk", # 검색된 결과에서 문서의 page_content로 사용할 키, 주의) 인덱스에서 검색대상될 필드 명이 아니다.
+        api_key=SEARCHSERVICE_KEY # Azure Search Service 의 key
+    )
 
+    st.title("🧠 Pro-Gen 데모")
+    # st.caption("💬 OpenAI GPT 모델을 사용하는 간단한 채팅 앱")
+
+    # API 호출을 한 번만 실행하도록 세션 상태 체크
+    if 'project_analysis_done' not in st.session_state:
+        with st.spinner("프로젝트 분석 중..."):
+            results = [d for d in retriever.invoke("ktds 개발 규칙")]
+            response = client.chat.completions.create(
+                model= OPENAI_DEPLOYMENT_NAME,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"{results[0].page_content.replace("\\n", "\n").replace("\n", " ")}에 따라서 {st.session_state.project_config['additional_requirements']}를 수정하여라. 사용자에게 보여주는 값은 오직 entity만 나타내라."
+                    }
+                ],
+                temperature=0.7,
+            )
+            print(response.choices[0].message.content)
+            st.session_state.project_config['additional_requirements'] = response.choices[0].message.content
+
+            response = client.chat.completions.create(
+                model= OPENAI_DEPLOYMENT_NAME,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"{st.session_state.project_config}를 보기 좋은 형태로 나타내고 불필요한 말은 빼라."
+                    }
+                ],
+                temperature=0.7,
+            )
+            
+            # 세션 상태에 프로젝트 정보 저장
+            st.session_state.project_summary = response.choices[0].message.content
+
+            response = client.chat.completions.create(
+                model= OPENAI_DEPLOYMENT_NAME,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"{response.choices[0].message.content}를 참고하여 생성할 파일에 경로를 포함하고 번호를 매겨 답변하라. 각 파일에 코드를 나타낼 필요는 없다.db는 h2를 사용하고, 프로젝트 구조에 있는 설정파일도 번호에 포함하라. build.gradle 파일도 포함하라."
+                    }
+                ],
+                temperature=0.7,
+            )
+            assistant_reply = response.choices[0].message.content
+
+            response = client.chat.completions.create(
+                model= OPENAI_DEPLOYMENT_NAME,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"{response.choices[0].message.content}를 참고하여 생성할 파일들을 모두 xml 형태로만 답변하고 불필요한 말은 빼라. 양식은 다음과 같다. '<total>file_count</total><file><number>1</number><path>pro-gen/src/com/poc/progen/controller/</path><name>OrderController</name></file>'"
+                    }
+                ],
+                temperature=0.7,
+            )
+            print(f"생성할 파일의 경로: {response.choices[0].message.content}")
+            xml_content = response.choices[0].message.content
+            
+            root = ET.fromstring(f"<root>{xml_content}</root>")
+
+            # 전체 파일 개수 가져오기
+            total_files = root.find('total').text
+            print(f"Total files: {total_files}\n")
+
+            # 각 'file' 엘리먼트 순회하며 정보 추출
+            file_list = []
+            for file_elem in root.findall('file'):
+                number = file_elem.find('number').text
+                path = file_elem.find('path').text
+                name = file_elem.find('name').text
+                
+                file_info = {
+                    'number': int(number),
+                    'path': path,
+                    'name': name
+                }
+                file_list.append(file_info)
+
+            print("Files to be created:", file_list)
+            
+            # 세션 상태에 결과 저장
+            st.session_state.file_list = file_list
+            st.session_state.assistant_reply = assistant_reply
+            st.session_state.project_analysis_done = True
     
-
-    st.title("🧠 LLM 챗봇 데모")
-    st.caption("💬 OpenAI GPT 모델을 사용하는 간단한 채팅 앱")
-
+    # 세션 상태에서 저장된 데이터 사용
+    file_list = st.session_state.get('file_list', [])
+    assistant_reply = st.session_state.get('assistant_reply', "")
+    
     # 세션 상태 초기화
     if "messages" not in st.session_state:
         st.session_state.messages = [
-            {"role": "assistant", "content": "안녕하세요! 무엇을 도와드릴까요?"}
+            {"role": "assistant", "content": "안녕하세요! 다음과 같이 프로젝트를 생성은 ktds 개발 규칙을 따릅니다."},
+            {"role": "system", "content": f"생성할 프로젝트는 다음과 같습니다. {st.session_state.get('project_summary', '')}"}
         ]
+        if assistant_reply:
+            st.session_state.messages.append({"role": "assistant", "content": assistant_reply})
 
     # 채팅 영역을 스크롤 가능한 컨테이너로 설정
     chat_container = st.container(height=400)  # 높이 약 5cm (400px)
@@ -445,28 +481,6 @@ def render_page2():
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-    # 사용자 입력 (컨테이너 밖에 배치하여 항상 하단에 고정)
-    user_input = st.chat_input("메시지를 입력하세요...")
-
-    if user_input:
-        # 사용자 메시지 저장
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        
-        # OpenAI 응답 요청
-        with st.spinner("답변 작성 중..."):
-            response = client.chat.completions.create(
-                model= OPENAI_DEPLOYMENT_NAME,
-                messages=st.session_state.messages,
-                temperature=0.7,
-            )
-            assistant_reply = response.choices[0].message.content
-
-        # 응답 저장
-        st.session_state.messages.append({"role": "assistant", "content": assistant_reply})
-        
-        # 새 메시지가 추가되면 페이지 새로고침
-        st.rerun()
-    
     # 하단 버튼
     st.divider()
     col1, col2, col3 = st.columns([1, 1, 1])
@@ -478,8 +492,90 @@ def render_page2():
     
     with col3:
         if st.button("🚀 Generate Project", type="primary", use_container_width=True):
-            st.success("🎉 Project generation will be implemented in the next phase!")
-            st.balloons()
+            try:
+                generated_files = []
+                target_folder = os.path.join(os.path.dirname(__file__), "target")
+                
+                for file_info in file_list:
+                    # file_info['path']에 이미 프로젝트 구조가 포함되어 있으므로 직접 사용
+                    project_folder = os.path.join(target_folder, file_info['path'].strip('/'))
+                    
+                    # 폴더 생성 (폴더가 없으면 생성)
+                    os.makedirs(project_folder, exist_ok=True)
+                    
+                    # 파일 생성
+                    java_file_path = os.path.join(project_folder, f"{file_info['name']}")
+
+                    # AI로 파일 내용 생성
+                    response = client.chat.completions.create(
+                        model= OPENAI_DEPLOYMENT_NAME,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": f"{st.session_state.project_summary}와 {file_list}를 참고하여 {file_info['name']} 파일 안에 들어갈 코드만 답변하라. ```language```는 제외하라."
+                            }
+                        ],
+                        temperature=0.7,
+                    )
+                    java_content = f"""{response.choices[0].message.content}"""
+                    
+                    # 파일 쓰기
+                    with open(java_file_path, 'w', encoding='utf-8') as f:
+                        f.write(java_content)
+                    
+                    generated_files.append({
+                        'path': java_file_path,
+                        'name': file_info['name'],
+                        'content': java_content
+                    })
+                    
+                    st.success(f"🎉 파일이 성공적으로 생성되었습니다!")
+                    st.info(f"📁 생성된 경로: {project_folder}")
+                    st.info(f"📄 생성된 파일: {file_info['name']}")
+                
+                # ZIP 파일 생성
+                project_root = os.path.join(target_folder, file_list[0]['path'].split('/')[0]) if file_list else None
+                if project_root and os.path.exists(project_root):
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                        for root, dirs, files in os.walk(project_root):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                # ZIP 내부 경로 설정 (target 폴더 제외)
+                                arcname = os.path.relpath(file_path, target_folder)
+                                zip_file.write(file_path, arcname)
+                    
+                    zip_buffer.seek(0)
+                    
+                    # 세션 상태에 ZIP 데이터 저장
+                    st.session_state.project_zip = {
+                        'data': zip_buffer.getvalue(),
+                        'filename': f"{config.get('project_name', 'project')}.zip"
+                    }
+                
+                st.balloons()
+                
+            except Exception as e:
+                st.error(f"❌ 프로젝트 생성 중 오류가 발생했습니다: {str(e)}")
+    
+    # 프로젝트 다운로드 섹션
+    if 'project_zip' in st.session_state and st.session_state.project_zip:
+        st.divider()
+        st.subheader("📥 Download Generated Project")
+        
+        col_download1, col_download2, col_download3 = st.columns([1, 1, 1])
+        
+        with col_download2:
+            # 프로젝트 ZIP 파일 다운로드 버튼
+            st.download_button(
+                label="� Download Project (ZIP)",
+                data=st.session_state.project_zip['data'],
+                file_name=st.session_state.project_zip['filename'],
+                mime="application/zip",
+                use_container_width=True,
+                type="primary"
+            )
+
 
     
 def main():

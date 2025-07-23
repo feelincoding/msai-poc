@@ -1,2 +1,4 @@
 .env
 ./dojo.ipynb
+./pro-gen/.venv
+./pro-gen/target/*
