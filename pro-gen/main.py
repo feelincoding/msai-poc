@@ -34,7 +34,7 @@ def main():
             sys.executable, "-m", "streamlit", "run", 
             str(streamlit_app_path),
             "--server.address", "0.0.0.0",
-            "--server.port", "8501"
+            "--server.port", "80"
         ]
         
         subprocess.run(cmd, cwd=current_dir)

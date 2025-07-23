@@ -1,6 +1,17 @@
 # msai-poc
 
+## Execution
 ``` bash
+cd pro-gen
+source .venv/bin/activate
+uv sync
+streamlit run app.py
+```
+
+
+
+``` bash
+# make pjt
 pip install uv
 uv init pro-gen
 cd pro-gen
