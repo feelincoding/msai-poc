@@ -412,7 +412,7 @@ def render_page2():
                 messages=[
                     {
                         "role": "user",
-                        "content": f"{response.choices[0].message.content}를 참고하여 생성할 파일에 경로를 포함하고 번호를 매겨 답변하라. 각 파일에 코드를 나타낼 필요는 없다.db는 h2를 사용하고, 프로젝트 구조에 있는 설정파일도 번호에 포함하라. build.gradle 파일도 포함하라."
+                        "content": f"{response.choices[0].message.content}를 참고하여 생성할 파일에 경로를 포함하고 번호를 매겨 답변하라. 경로는 {st.session_state.project_config['project_name']}을 포함하라. 각 파일에 코드를 나타낼 필요는 없다.db는 h2를 사용하고, 프로젝트 구조에 있는 설정파일도(build.gradle, application.yml, README.md 등...) 번호에 포함하라."
                     }
                 ],
                 temperature=0.7,
