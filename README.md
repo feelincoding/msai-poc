@@ -36,3 +36,10 @@ streamlit run app.py
 ![프로젝트 개요 생성 화면](./img/스크린샷%202025-07-24%2006.png)
 ![프로젝트 개요 생성 화면](./img/스크린샷%202025-07-24%2007.png)
 
+### entity example
+Entity Name,Description,Primary Key,Foreign Keys (Relationships),Key Fields (for quick understanding)
+Users,쇼핑몰의 고객 또는 관리자 정보,id,,email, username, password_hash
+Products,판매되는 상품의 정보,id,category_id (Categories),name, price, stock_quantity
+Categories,상품을 분류하는 카테고리 정보,id,parent_id (Categories - Self-referencing),name
+Orders,고객의 주문 정보,id,user_id (Users),order_date, total_amount, status
+Order_Items,각 주문에 포함된 개별 상품의 상세 정보,id,order_id (Orders),product_id (Products),quantity, price_at_order
